@@ -1,0 +1,208 @@
+---
+title: "Analysis Report"
+author: "Dr. Shoemaker's Team"
+date: "10/15/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Predict breast cancer
+
+```{r}
+library(tidyverse)
+library(dplyr)
+library(GGally)
+library(ggplot2)
+library(ISLR)
+library(caret)
+library(ROCR)
+```
+
+
+## Explore Data
+```{r}
+data <- read.csv("data.csv")
+numeric_data <- data[,3:32 ]
+
+```
+
+```{r}
+str(data)
+```
+
+## Data Visualization
+
+```{r}
+data %>% filter(diagnosis == "M") %>% select_if(is.numeric) %>% select(contains("mean")) %>% pairs()
+data %>% filter(diagnosis == "B") %>% select_if(is.numeric) %>% select(contains("mean")) %>% pairs()
+data %>% filter(diagnosis == "M") %>% select_if(is.numeric) %>% select(contains("worst")) %>% pairs()
+data %>% filter(diagnosis == "B") %>% select_if(is.numeric) %>% select(contains("worst")) %>% pairs()
+```
+
+```{r}
+data %>% ggplot(aes(x= concavity_worst, y = concave.points_worst)) +
+  geom_point() +
+  geom_smooth()
+data %>% select(radius_worst,area_worst,perimeter_worst)%>%
+  pairs()
+
+```
+
+#The relationship between "se" variables
+```{r}
+numeric_data%>%
+  select(contains("se")) %>% 
+  mutate(diagnosis=factor(data$diagnosis)) %>%
+  ggpairs(aes(col= diagnosis,alpha=0.5))
+```
+#The relationship between "worst" variables
+
+```{r}
+numeric_data%>%
+  select(contains("worst")) %>% 
+  mutate(diagnosis=factor(data$diagnosis)) %>%
+  ggpairs(aes(col= diagnosis,alpha=0.5))
+```
+
+#The relationship between "mean" variables
+
+```{r}
+ggpairs(data, column = 2:12, aes(color=diagnosis, alpha = 0.5))
+```
+
+```{r}
+# Set diagnosis as factor
+data <- data[,2:32]
+data$diagnosis <- as.factor(data$diagnosis)
+```
+
+## Step-wise Selection
+```{r,warning=FALSE,include=FALSE}
+
+full_model <- glm (diagnosis ~ ., data = data, family ="binomial")
+fitstart <- glm (diagnosis ~ 1, data = data, family ="binomial")
+
+forward_model <-step(fitstart, direction= "forward", scope= formula(full_model))
+
+forward_model$aic
+
+both_model <- step(fitstart, direction= "both", scope=formula(full_model))
+both_model$aic
+
+backward_model <-step(full_model,direction="backward")
+backward_model$formula
+backward_model$aic
+
+```
+
+## Model Predicting 
+```{r}
+predict_model <- function(x) {
+  y_hat <- predict(x, data = data, type = "response") 
+  predicted_class <- vector(length = length(y_hat))
+  predicted_class[y_hat > 0.5] <- "M"
+  predicted_class[y_hat <= 0.5] <- "B"
+  predicted_class <- as.factor(predicted_class)
+  table(predicted_class, data$diagnosis)
+  return(sum(predicted_class == data$diagnosis) / length(predicted_class) * 100)
+}
+predict_model(forward_model)
+predict_model(backward_model)
+predict_model(both_model)
+```
+
+
+## cross-validation: trainning an data
+```{r}
+n <- nrow(data) # setting the sample size
+test <- sample(1:n,100, replace = F)
+## test is the indexes of the validation set
+
+##set the train and test parts of the data
+test_data <- data[test, ]
+train_data <- data[-test, ]
+
+```
+
+## Training Model
+```{r,warning=FALSE}
+# LOOCV 
+train_control <- trainControl(method = "LOOCV", number = nrow(train_data))
+
+# train the model on training set
+training_model <- function(x){
+  model <- train(x$formula,  
+               data = data,
+               trControl = train_control,
+               method = "glm",
+               family=binomial())
+  return(model)
+}
+training_model(forward_model)
+training_model(backward_model)
+training_model(both_model)
+```
+
+
+##Testing Model
+
+```{r,warning=F}
+testing_model <- function(model){
+  validate_diagnosis_lm <- glm (model$formula, data = train_data, family ="binomial")
+  y_hat <- predict(validate_diagnosis_lm, newdata = test_data, type = "response")
+  predicted_class <- vector(length = length(y_hat))
+  predicted_class[y_hat > 0.5] <- "M"
+  predicted_class[y_hat <= 0.5] <- "B"
+  predicted_class <- as.factor(predicted_class)
+  #table(predicted_class, test_data$diagnosis)
+  return(sum(predicted_class == test_data$diagnosis) /length(predicted_class) * 100)
+}
+## Accuray of each model
+testing_model(forward_model)
+testing_model(backward_model)
+testing_model(both_model)
+```
+
+## Prediction plot
+
+```{r, warning=FALSE}
+
+test_data$predicted_class = predict(training_model(forward_model), newdata = test_data)
+test_data$predicted_diagnosis = predict(training_model(forward_model), newdata = test_data, type = "prob")$"M"
+
+#plot_test= test_data %>% dplyr::select(diagnosis,predicted_class,predicted_diagnosis)
+
+plot(as.numeric(diagnosis)-1 ~ perimeter_worst, data = train_data, col = "blue")
+points(predicted_diagnosis ~ perimeter_worst, data = test_data, col = predicted_class)
+abline(h = 0.5, lty = 3)
+```
+
+
+```{r, fig.width=12, fig.height=6,warning=F}
+plts = lapply(names(training_model(forward_model)$finalModel$coefficients)[-1], function(i){
+       return(plot(ggpredict(training_model(forward_model)$finalModel,i)))
+       })
+wrap_plots(plts)
+```
+
+## ROC Curve
+```{r}
+p2 <- predict(forward_model,data,type="response")
+
+pred2 <- ifelse(p2> 0.5,1,0)
+table(predicted = pred2, actual = data$diagnosis)
+
+pred3 <- prediction(p2,data$diagnosis)
+
+roc <-performance(pred3,"tpr","fpr")
+
+plot(roc,colorize=T, main="ROC curve")
+
+plot(roc,colorize=T, main="ROC curve",ylab="Sensitivity",xlab="1-Specificity")
+abline(a=0,b=1)
+
+```
+
